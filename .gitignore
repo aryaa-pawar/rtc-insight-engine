@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+.vscode/
+.idea/
+
+outputs/
+
+.env
+venv/
+
+data/raw_pdfs/

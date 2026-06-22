@@ -10,3 +10,19 @@ outputs/
 venv/
 
 data/raw_pdfs/
+__pycache__/
+.ipynb_checkpoints/
+
+*.pyc
+*.pyo
+
+.env
+
+.vscode/settings.json
+
+outputs/
+
+*.log
+
+.DS_Store
+Thumbs.db

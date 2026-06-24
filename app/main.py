@@ -34,8 +34,12 @@ def home(request: Request):
 @app.post("/ask")
 def ask(question: Question):
 
-    result = ask_rtc(
-        question.question
-    )
-
-    return result
+    try:
+        return ask_rtc(
+            question.question
+        )
+    except Exception:
+        return {
+            "answer": "I could not process that question right now. Please try another RTC question.",
+            "sources": []
+        }

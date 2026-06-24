@@ -1,98 +1,166 @@
 import os
-import pandas as pd
-import google.generativeai as genai
+from pathlib import Path
 
+import pandas as pd
 from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-#LOAD ENVIRONMENT VARIABLES
-
-load_dotenv()
-
-genai.configure(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 
 
-#GEMINI MODEL
+BASE_DIR = Path(__file__).resolve().parents[1]
+FACTS_PATH = BASE_DIR / "data" / "processed" / "rtc_facts.txt"
+CHUNKS_PATH = BASE_DIR / "data" / "processed" / "rtc_chunks.csv"
+
+load_dotenv(BASE_DIR / ".env")
 
 
-model = genai.GenerativeModel(
-    "gemini-2.5-flash"
-)
+def _load_facts():
+    if not FACTS_PATH.exists():
+        return ""
+
+    return FACTS_PATH.read_text(encoding="utf-8")
 
 
-#LOAD FACTS FILE
+def _load_chunks():
+    if not CHUNKS_PATH.exists():
+        return pd.DataFrame(columns=["report_name", "page_number", "chunk_text"])
 
-with open(
-    "data/processed/rtc_facts.txt",
-    "r",
-    encoding="utf-8"
-) as f:
-    FACTS = f.read()
-
-#LOAD RTC REPORT CHUNKS
+    df = pd.read_csv(CHUNKS_PATH)
+    df["chunk_text"] = df["chunk_text"].fillna("").astype(str)
+    return df
 
 
-df = pd.read_csv(
-    "data/processed/rtc_chunks.csv"
-)
+FACTS = _load_facts()
+df = _load_chunks()
+
+if len(df) > 0:
+    vectorizer = TfidfVectorizer(stop_words="english")
+    X = vectorizer.fit_transform(df["chunk_text"])
+else:
+    vectorizer = None
+    X = None
 
 
-#BUILD SEARCH INDEX
+def _get_model():
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if genai is None or not api_key:
+        return None
+
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel("gemini-2.5-flash")
 
 
-vectorizer = TfidfVectorizer(
-    stop_words="english"
-)
+def _relevant_chunks(question, limit=8, threshold=0.03):
+    if vectorizer is None or X is None or len(df) == 0:
+        return []
 
-X = vectorizer.fit_transform(
-    df["chunk_text"]
-)
+    query_vector = vectorizer.transform([question])
+    scores = cosine_similarity(query_vector, X).flatten()
+    top_indices = scores.argsort()[-limit:][::-1]
+
+    return [idx for idx in top_indices if scores[idx] > threshold]
 
 
-#MAIN FUNCTION
-
-def ask_rtc(question):
-    query_vector = vectorizer.transform(
-        [question]
-    )
-
-    scores = cosine_similarity(
-        query_vector,
-        X
-    ).flatten()
-
-    top_indices = scores.argsort()[-8:][::-1]
-
-    relevant_chunks = []
-
-    for idx in top_indices:
-
-        if scores[idx] > 0.03:
-
-            relevant_chunks.append(idx)
-
-    context = ""
-
+def _build_context(indices):
+    context_parts = []
     sources = []
 
-    for idx in relevant_chunks:
+    for idx in indices:
+        row = df.iloc[idx]
+        report_name = row.get("report_name", "RTC report")
+        page_number = row.get("page_number", "N/A")
+        chunk_text = row.get("chunk_text", "")
 
-        context += (
-            f"Report: {df.iloc[idx]['report_name']}\n"
-            f"Page: {df.iloc[idx]['page_number']}\n"
-            f"Text: {df.iloc[idx]['chunk_text']}\n\n"
+        context_parts.append(
+            f"Report: {report_name}\n"
+            f"Page: {page_number}\n"
+            f"Text: {chunk_text}"
+        )
+        sources.append(f"{report_name} (Page {page_number})")
+
+    return "\n\n".join(context_parts), sources
+
+
+def _local_answer(question, indices):
+    question_lower = question.lower()
+    context, sources = _build_context(indices[:4])
+
+    fact_terms = [
+        "what is rtc",
+        "stand for",
+        "mission",
+        "founder",
+        "sue harnett",
+        "what does rtc do",
+        "members",
+        "programs",
+        "community"
+    ]
+
+    if any(term in question_lower for term in fact_terms):
+        fact_lines = [line.strip() for line in FACTS.splitlines() if line.strip()]
+        selected = []
+
+        for line in fact_lines:
+            line_lower = line.lower()
+            if (
+                "rtc stands for" in line_lower
+                or "rewriting the code" in line_lower
+                or "mission" in line_lower
+                or "sue harnett" in line_lower
+                or "women in technology" in line_lower
+                or "members" in line_lower
+                or "mentorship" in line_lower
+                or "networking" in line_lower
+                or "career development" in line_lower
+                or "community" in line_lower
+            ):
+                selected.append(line)
+
+            if len(selected) == 6:
+                break
+
+        return (
+            " ".join(selected),
+            ["RTC knowledge base"]
         )
 
-        sources.append(
-            f"{df.iloc[idx]['report_name']} "
-            f"(Page {df.iloc[idx]['page_number']})"
-        )
+    if context:
+        snippets = []
+        for idx in indices[:3]:
+            text = str(df.iloc[idx]["chunk_text"]).strip()
+            if len(text) > 360:
+                text = text[:357].rsplit(" ", 1)[0] + "..."
+            snippets.append(text)
+
+        answer = "Here is what I found in the RTC reports: " + " ".join(snippets)
+        return answer, sources
+
+    return (
+        "I could not find that information in the RTC reports or knowledge base.",
+        []
+    )
+
+
+def ask_rtc(question):
+    question = (question or "").strip()
+
+    if not question:
+        return {
+            "answer": "Please enter a question about RTC reports, programs, recruiting, internships, or outcomes.",
+            "sources": []
+        }
+
+    relevant_indices = _relevant_chunks(question)
+    context, sources = _build_context(relevant_indices)
 
     prompt = f"""
-
 You are RTC Assistant.
 
 RTC stands for Rewriting The Code.
@@ -111,76 +179,58 @@ QUESTION:
 
 INSTRUCTIONS:
 
-Use BOTH the RTC facts and report information.
+Use both the RTC facts and report information.
 Answer naturally and professionally.
 Write complete sentences.
 Be conversational and helpful.
 Combine information from multiple reports when useful.
 Explain the meaning of statistics instead of simply repeating them.
-
-If the question asks about:
-
-Founder
-Mission
-History
-What RTC is
-What RTC stands for
-
-use the RTC FACTS section.
-
-If the question asks about:
-
-Programs
-Members
-Growth
-Metrics
-Outcomes
-Recruiting
-Community impact
-
-use the REPORT INFORMATION section.
-
 Keep answers between 100 to 250 words unless the user explicitly asks for detailed information.
-
-For simple questions, provide concise answers.
-
-For analytical or report-related questions, provide detailed answers.
-
 Never mention chunks, retrieval, or report extraction.
 If information truly does not exist in either section, say:
 
 I could not find that information in the RTC reports or knowledge base.
 
-STYLE:
-
-Professional
-Friendly
-Website-ready
-Clear and concise
-
 ANSWER:
 """
-    
+
+    model = _get_model()
+
+    if model is None:
+        answer, local_sources = _local_answer(question, relevant_indices)
+        return {
+            "answer": answer,
+            "sources": local_sources or sources
+        }
+
     try:
-        response = model.generate_content(
-            prompt
-        )
-        return {
-            "answer": response.text,
-            "sources": sources
-        }
-    except Exception as e:
-        error_msg = str(e)
+        response = model.generate_content(prompt)
+        answer = getattr(response, "text", "").strip()
 
-    if "429" in error_msg or "quota" in error_msg.lower():
+        if not answer:
+            answer, local_sources = _local_answer(question, relevant_indices)
+            return {
+                "answer": answer,
+                "sources": local_sources or sources
+            }
 
         return {
-            "answer":
-            "The AI service is temporarily busy. Please wait about a minute and try again.",
+            "answer": answer,
             "sources": sources
         }
 
-    return {
-        "answer": f"ERROR: {error_msg}",
-        "sources": []
-    }
+    except Exception as exc:
+        error_msg = str(exc)
+
+        if "429" in error_msg or "quota" in error_msg.lower():
+            answer, _ = _local_answer(question, relevant_indices)
+            return {
+                "answer": answer,
+                "sources": sources or _build_context(relevant_indices[:4])[1]
+            }
+
+        answer, local_sources = _local_answer(question, relevant_indices)
+        return {
+            "answer": answer,
+            "sources": local_sources or sources
+        }

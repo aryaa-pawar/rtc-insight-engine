@@ -26,3 +26,9 @@ outputs/
 
 .DS_Store
 Thumbs.db
+.env
+
+.env
+__pycache__/
+.ipynb_checkpoints/
+*.pyc

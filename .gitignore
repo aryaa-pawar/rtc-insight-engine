@@ -1,34 +1,27 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
 .vscode/
 .idea/
 
-outputs/
-
-.env
-venv/
-
-data/raw_pdfs/
-__pycache__/
-.ipynb_checkpoints/
-
-*.pyc
-*.pyo
-
-.env
-
-.vscode/settings.json
-
-outputs/
-
-*.log
-
+# OS
 .DS_Store
 Thumbs.db
-.env
 
-.env
-__pycache__/
-.ipynb_checkpoints/
-*.pyc
+# Logs
+*.log
